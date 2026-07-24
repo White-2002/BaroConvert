@@ -161,7 +161,7 @@ private fun BaroConvertApp(initialUri: Uri?) {
                     .padding(24.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Text("바로변환", style = MaterialTheme.typography.headlineMedium)
+                Text("파일 확장자 변환", style = MaterialTheme.typography.headlineMedium)
                 Text("파일을 고르면 가능한 출력 확장자만 표시합니다.")
 
                 Card(Modifier.fillMaxWidth()) {
