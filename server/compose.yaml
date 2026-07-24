@@ -1,0 +1,22 @@
+services:
+  baroconvert:
+    build: .
+    container_name: baroconvert
+    restart: unless-stopped
+    environment:
+      API_KEY: "${API_KEY:?Set API_KEY in server/.env}"
+      MAX_UPLOAD_MB: "500"
+      APP_VERSION_CODE: "7"
+      APP_VERSION_NAME: "0.5.0"
+      RELEASE_APK: "/app/releases/baroconvert.apk"
+    ports:
+      - "8787:8787"
+    mem_limit: 2g
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    volumes:
+      - ./releases:/app/releases:ro
+    tmpfs:
+      - /tmp:size=4g,mode=1777
