@@ -1,0 +1,11 @@
+.gradle/
+.idea/
+local.properties
+**/build/
+*.iml
+.DS_Store
+server/__pycache__/
+server/.env
+work/
+outputs/
+server/releases/*.apk
