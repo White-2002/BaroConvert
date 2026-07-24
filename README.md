@@ -1,4 +1,4 @@
-# 바로변환
+# 파일 확장자 변환
 
 갤럭시 탭/폰용 광고 없는 파일 변환기 MVP입니다.
 
@@ -13,7 +13,7 @@
 - MP3/M4A/AAC/WAV/FLAC/OGG/OPUS/WMA 음원 상호 변환
 - MP4/MOV/MKV/AVI/WEBM/M4V/3GP/WMV/FLV → MP4/MKV/WEBM 또는 음원 추출
 - PDF → 페이지별 JPG/PNG ZIP 묶음
-- 내 파일/갤러리에서 공유 → 바로변환
+- 내 파일/갤러리에서 공유 → 파일 확장자 변환
 - 시스템 파일 선택기와 저장 위치 선택기 사용 (전체 저장소 권한 없음)
 
 ## 왜 일부 변환은 서버를 쓰나요?
@@ -43,7 +43,7 @@ curl http://NAS주소:8787/health
 
 v0.5.0부터 앱을 실행할 때 공개 GitHub Releases의 새 버전을 자동으로 확인합니다. NAS가 없어도 앱에서 **업데이트**를 눌러 APK를 내려받고 Android 설치 화면을 열 수 있습니다.
 
-- GitHub Release에는 `baroconvert-v버전.apk`와 `update.json`을 함께 첨부합니다.
+- GitHub Release에는 `file-extension-converter-v버전.apk`와 `update.json`을 함께 첨부합니다.
 - `update.json`에는 새 APK의 버전 코드, 버전명, 크기, SHA-256, 다운로드 URL이 들어갑니다.
 - 최초 한 번은 Android 설정에서 **이 출처의 앱 설치 허용**을 켜야 합니다.
 - Android 보안상 실제 설치 직전의 시스템 확인 버튼은 자동으로 누를 수 없습니다.
