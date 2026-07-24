@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 로컬 NAS의 http:// 주소를 허용한다. 외부 접속에는 HTTPS를 사용한다. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
