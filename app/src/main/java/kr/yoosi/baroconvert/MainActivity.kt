@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -60,15 +61,12 @@ import java.io.File
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val sharedUri = if (intent?.action == Intent.ACTION_SEND) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(Intent.EXTRA_STREAM)
-            }
-        } else null
-        setContent { BaroConvertApp(sharedUri) }
+        val sharedUris = when (intent?.action) {
+            Intent.ACTION_SEND -> listOfNotNull(intent.streamUri())
+            Intent.ACTION_SEND_MULTIPLE -> intent.streamUris()
+            else -> emptyList()
+        }
+        setContent { BaroConvertApp(sharedUris) }
     }
 }
 
@@ -98,21 +96,27 @@ private enum class OutputFormat(
     WEBM("WEBM", "webm", "video/webm"),
 }
 
-private data class PreparedResult(val file: File, val format: OutputFormat)
+private data class PreparedResult(
+    val file: File,
+    val format: OutputFormat,
+    val outputName: String,
+)
 
 @Composable
-private fun BaroConvertApp(initialUri: Uri?) {
+private fun BaroConvertApp(initialUris: List<Uri>) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember { context.getSharedPreferences("server", 0) }
     val scope = rememberCoroutineScope()
-    val initialFile = remember(initialUri) { initialUri?.let { fileInfo(context.contentResolver, it) } }
-    var selected by remember { mutableStateOf(initialFile) }
-    var selectedFormat by remember { mutableStateOf(initialFile?.let(::availableFormats)?.firstOrNull()) }
+    val initialFiles = remember(initialUris) {
+        initialUris.map { fileInfo(context.contentResolver, it) }
+    }
+    var selectedFiles by remember { mutableStateOf(initialFiles) }
+    var selectedFormat by remember { mutableStateOf(commonAvailableFormats(initialFiles).firstOrNull()) }
     var serverUrl by remember { mutableStateOf(prefs.getString("url", "http://192.168.0.10:8787").orEmpty()) }
     var apiToken by remember { mutableStateOf(prefs.getString("token", "").orEmpty()) }
-    var status by remember { mutableStateOf("파일을 하나 선택하세요.") }
+    var status by remember { mutableStateOf("변환할 파일을 선택하세요.") }
     var converting by remember { mutableStateOf(false) }
-    var preparedResult by remember { mutableStateOf<PreparedResult?>(null) }
+    var preparedResults by remember { mutableStateOf(emptyList<PreparedResult>()) }
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var checkingUpdate by remember { mutableStateOf(false) }
     var downloadingUpdate by remember { mutableStateOf(false) }
@@ -137,25 +141,25 @@ private fun BaroConvertApp(initialUri: Uri?) {
         requestUpdateCheck()
     }
 
-    val openFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            preparedResult?.file?.delete()
-            preparedResult = null
-            val picked = fileInfo(context.contentResolver, uri)
-            selected = picked
-            selectedFormat = availableFormats(picked).firstOrNull()
-            if (picked.requiresServer()) serverExpanded = true
+    val openFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            preparedResults.forEach { it.file.delete() }
+            preparedResults = emptyList()
+            val picked = uris.map { fileInfo(context.contentResolver, it) }
+            selectedFiles = picked
+            selectedFormat = commonAvailableFormats(picked).firstOrNull()
+            if (picked.any { it.requiresServer() }) serverExpanded = true
             status = if (selectedFormat == null) {
-                "이 파일은 아직 지원하는 변환 형식이 없습니다."
+                "선택한 파일에 공통으로 지원되는 출력 형식이 없습니다."
             } else {
-                "아래에서 원하는 확장자를 선택하세요."
+                "모든 파일에 공통으로 가능한 출력 형식을 골라주세요."
             }
         }
     }
 
     val saveFile = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val targetUri = result.data?.data
-        val prepared = preparedResult
+        val prepared = preparedResults.singleOrNull()
         if (result.resultCode == Activity.RESULT_OK && targetUri != null && prepared != null) {
             runCatching {
                 context.contentResolver.openOutputStream(targetUri)?.use { output ->
@@ -164,8 +168,35 @@ private fun BaroConvertApp(initialUri: Uri?) {
             }.onSuccess {
                 status = "${prepared.format.label} 저장 완료"
                 prepared.file.delete()
-                preparedResult = null
+                preparedResults = emptyList()
             }.onFailure { status = it.message ?: "저장 실패" }
+        }
+    }
+
+    val saveFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri ->
+        if (treeUri != null && preparedResults.isNotEmpty()) {
+            runCatching {
+                val resolver = context.contentResolver
+                val parentUri = DocumentsContract.buildDocumentUriUsingTree(
+                    treeUri,
+                    DocumentsContract.getTreeDocumentId(treeUri),
+                )
+                preparedResults.forEach { prepared ->
+                    val targetUri = DocumentsContract.createDocument(
+                        resolver,
+                        parentUri,
+                        prepared.format.mimeType,
+                        prepared.outputName,
+                    ) ?: error("${prepared.outputName} 파일을 만들 수 없습니다.")
+                    resolver.openOutputStream(targetUri)?.use { output ->
+                        prepared.file.inputStream().use { it.copyTo(output) }
+                    } ?: error("${prepared.outputName} 저장 위치를 열 수 없습니다.")
+                }
+            }.onSuccess {
+                status = "${preparedResults.size}개 파일 저장 완료"
+                preparedResults.forEach { it.file.delete() }
+                preparedResults = emptyList()
+            }.onFailure { status = it.message ?: "일괄 저장 실패" }
         }
     }
 
@@ -201,14 +232,14 @@ private fun BaroConvertApp(initialUri: Uri?) {
                 StepCard(
                     number = "1",
                     title = "파일 선택",
-                    description = if (selected == null) {
-                        "변환할 원본 파일을 먼저 골라주세요."
+                    description = if (selectedFiles.isEmpty()) {
+                        "한 개 또는 여러 개의 원본 파일을 골라주세요."
                     } else {
-                        "파일이 준비됐습니다. 다른 파일로 바꿀 수도 있어요."
+                        "${selectedFiles.size}개 파일이 준비됐습니다."
                     },
                     active = true,
                 ) {
-                    if (selected != null) {
+                    if (selectedFiles.isNotEmpty()) {
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             color = MaterialTheme.colorScheme.surfaceVariant,
@@ -218,20 +249,22 @@ private fun BaroConvertApp(initialUri: Uri?) {
                                 modifier = Modifier.padding(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
-                                Text(
-                                    text = selected!!.name,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    text = selected!!.mimeType,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
+                                selectedFiles.take(3).forEach { file ->
+                                    Text(
+                                        text = file.name,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                if (selectedFiles.size > 3) {
+                                    Text(
+                                        text = "그 외 ${selectedFiles.size - 3}개 파일",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
                             }
                         }
                     }
@@ -240,22 +273,23 @@ private fun BaroConvertApp(initialUri: Uri?) {
                             .fillMaxWidth()
                             .height(52.dp),
                         shape = RoundedCornerShape(16.dp),
-                        onClick = { openFile.launch(arrayOf("*/*")) },
+                        onClick = { openFiles.launch(arrayOf("*/*")) },
                     ) {
-                        Text(if (selected == null) "파일 고르기" else "다른 파일 고르기")
+                        Text(if (selectedFiles.isEmpty()) "파일 여러 개 고르기" else "파일 다시 고르기")
                     }
                 }
 
-                val formats = selected?.let(::availableFormats).orEmpty()
+                val formats = commonAvailableFormats(selectedFiles)
                 StepCard(
                     number = "2",
                     title = "출력 형식",
                     description = when {
-                        selected == null -> "1단계에서 파일을 선택하면 가능한 형식이 나타납니다."
-                        formats.isEmpty() -> "이 파일은 아직 변환을 지원하지 않습니다."
-                        else -> "원하는 확장자 하나를 선택하세요."
+                        selectedFiles.isEmpty() -> "1단계에서 파일을 선택하면 가능한 형식이 나타납니다."
+                        formats.isEmpty() -> "선택한 모든 파일에 공통으로 가능한 형식이 없습니다."
+                        selectedFiles.size == 1 -> "원하는 확장자 하나를 선택하세요."
+                        else -> "${selectedFiles.size}개 파일의 공통 출력 형식만 표시됩니다."
                     },
-                    active = selected != null,
+                    active = selectedFiles.isNotEmpty(),
                 ) {
                     if (formats.isNotEmpty()) {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -279,11 +313,12 @@ private fun BaroConvertApp(initialUri: Uri?) {
                     number = "3",
                     title = "변환 및 저장",
                     description = when {
-                        selected == null -> "파일을 선택하면 변환 버튼이 활성화됩니다."
+                        selectedFiles.isEmpty() -> "파일을 선택하면 변환 버튼이 활성화됩니다."
                         selectedFormat == null -> "변환할 출력 형식을 선택하세요."
-                        else -> "${selectedFormat!!.label} 파일로 변환할 준비가 됐습니다."
+                        selectedFiles.size == 1 -> "${selectedFormat!!.label} 파일로 변환할 준비가 됐습니다."
+                        else -> "${selectedFiles.size}개 파일을 ${selectedFormat!!.label} 형식으로 변환합니다."
                     },
-                    active = selected != null && selectedFormat != null,
+                    active = selectedFiles.isNotEmpty() && selectedFormat != null,
                 ) {
                     if (converting) {
                         LinearProgressIndicator(
@@ -293,53 +328,67 @@ private fun BaroConvertApp(initialUri: Uri?) {
                         )
                     }
                     Button(
-                        enabled = selected != null && selectedFormat != null && !converting,
+                        enabled = selectedFiles.isNotEmpty() && selectedFormat != null && !converting,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp),
                         shape = RoundedCornerShape(18.dp),
                         onClick = {
-                            val source = selected ?: return@Button
+                            val sources = selectedFiles
+                            if (sources.isEmpty()) return@Button
                             val format = selectedFormat ?: return@Button
                             prefs.edit().putString("url", serverUrl).putString("token", apiToken).apply()
                             converting = true
-                            status = "${format.label}로 변환 중…"
+                            status = "${sources.size}개 파일을 ${format.label}로 변환 중…"
                             scope.launch {
                                 runCatching {
                                     withContext(Dispatchers.IO) {
-                                        val output = File.createTempFile("converted-", ".${format.extension}", context.cacheDir)
-                                        when {
-                                            source.isImage() && format == OutputFormat.PDF ->
-                                                LocalImageToPdfConverter.convert(context.contentResolver, source.uri, output)
-                                            source.isImage() ->
-                                                LocalImageConverter.convert(context.contentResolver, source.uri, output, format.extension)
-                                            source.isTextLike() && format == OutputFormat.TXT ->
-                                                LocalCopyConverter.convert(context.contentResolver, source.uri, output)
-                                            source.requiresServer() ->
-                                                ServerConverter.convert(
-                                                    context.contentResolver,
-                                                    source.uri,
-                                                    source.name,
-                                                    source.mimeType,
-                                                    output,
-                                                    format.serverTarget,
-                                                    serverUrl,
-                                                    apiToken,
+                                        val results = mutableListOf<PreparedResult>()
+                                        try {
+                                            sources.forEachIndexed { index, source ->
+                                                val output = File.createTempFile(
+                                                    "converted-$index-",
+                                                    ".${format.extension}",
+                                                    context.cacheDir,
                                                 )
-                                            else -> error("선택한 변환 조합은 아직 지원하지 않습니다.")
+                                                try {
+                                                    convertFile(
+                                                        context = context,
+                                                        source = source,
+                                                        format = format,
+                                                        output = output,
+                                                        serverUrl = serverUrl,
+                                                        apiToken = apiToken,
+                                                    )
+                                                } catch (error: Throwable) {
+                                                    output.delete()
+                                                    throw error
+                                                }
+                                                results += PreparedResult(
+                                                    file = output,
+                                                    format = format,
+                                                    outputName = source.name.substringBeforeLast('.') + ".${format.extension}",
+                                                )
+                                            }
+                                            results
+                                        } catch (error: Throwable) {
+                                            results.forEach { it.file.delete() }
+                                            throw error
                                         }
-                                        output
                                     }
-                                }.onSuccess { output ->
-                                    preparedResult?.file?.delete()
-                                    preparedResult = PreparedResult(output, format)
+                                }.onSuccess { results ->
+                                    preparedResults.forEach { it.file.delete() }
+                                    preparedResults = results
                                     status = "변환 완료 — 저장 위치를 선택하세요."
-                                    val outputName = source.name.substringBeforeLast('.') + ".${format.extension}"
-                                    saveFile.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                                        addCategory(Intent.CATEGORY_OPENABLE)
-                                        type = format.mimeType
-                                        putExtra(Intent.EXTRA_TITLE, outputName)
-                                    })
+                                    if (results.size == 1) {
+                                        saveFile.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                            addCategory(Intent.CATEGORY_OPENABLE)
+                                            type = format.mimeType
+                                            putExtra(Intent.EXTRA_TITLE, results.single().outputName)
+                                        })
+                                    } else {
+                                        saveFolder.launch(null)
+                                    }
                                 }.onFailure { status = it.message ?: "변환 실패" }
                                 converting = false
                             }
@@ -360,7 +409,7 @@ private fun BaroConvertApp(initialUri: Uri?) {
                             fontWeight = FontWeight.Medium,
                         )
                     }
-                    if (selected?.requiresServer() == true) {
+                    if (selectedFiles.any { it.requiresServer() }) {
                         Text(
                             text = "이 형식은 아래의 개인 변환 서버 설정이 필요합니다.",
                             color = MaterialTheme.colorScheme.tertiary,
@@ -604,6 +653,14 @@ private val audioFormats = listOf(
 )
 private val videoFormats = listOf(OutputFormat.MP4, OutputFormat.MKV, OutputFormat.WEBM)
 
+private fun commonAvailableFormats(files: List<SelectedFile>): List<OutputFormat> {
+    if (files.isEmpty()) return emptyList()
+    return files.drop(1).fold(availableFormats(files.first())) { common, file ->
+        val supported = availableFormats(file)
+        common.filter { it in supported }
+    }
+}
+
 private fun availableFormats(file: SelectedFile): List<OutputFormat> = when {
     file.isImage() -> listOf(OutputFormat.PDF, OutputFormat.JPG, OutputFormat.PNG, OutputFormat.WEBP_IMAGE)
     file.isTextLike() -> listOf(OutputFormat.TXT)
@@ -625,6 +682,52 @@ private fun SelectedFile.isTextLike(): Boolean = extension() in textLikeExtensio
 
 private fun SelectedFile.requiresServer(): Boolean =
     !isImage() && !isTextLike() && availableFormats(this).isNotEmpty()
+
+private fun convertFile(
+    context: android.content.Context,
+    source: SelectedFile,
+    format: OutputFormat,
+    output: File,
+    serverUrl: String,
+    apiToken: String,
+) {
+    when {
+        source.isImage() && format == OutputFormat.PDF ->
+            LocalImageToPdfConverter.convert(context.contentResolver, source.uri, output)
+        source.isImage() ->
+            LocalImageConverter.convert(context.contentResolver, source.uri, output, format.extension)
+        source.isTextLike() && format == OutputFormat.TXT ->
+            LocalCopyConverter.convert(context.contentResolver, source.uri, output)
+        source.requiresServer() ->
+            ServerConverter.convert(
+                context.contentResolver,
+                source.uri,
+                source.name,
+                source.mimeType,
+                output,
+                format.serverTarget,
+                serverUrl,
+                apiToken,
+            )
+        else -> error("선택한 변환 조합은 아직 지원하지 않습니다.")
+    }
+}
+
+private fun Intent.streamUri(): Uri? =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+    } else {
+        @Suppress("DEPRECATION")
+        getParcelableExtra(Intent.EXTRA_STREAM)
+    }
+
+private fun Intent.streamUris(): List<Uri> =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
+    } else {
+        @Suppress("DEPRECATION")
+        getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
+    }
 
 private fun fileInfo(resolver: android.content.ContentResolver, uri: Uri): SelectedFile {
     var name = "selected-file"
