@@ -1,13 +1,15 @@
 services:
   baroconvert:
-    build: .
+    build:
+      context: .
+      network: host
     container_name: baroconvert
     restart: unless-stopped
     environment:
       API_KEY: "${API_KEY:?Set API_KEY in server/.env}"
       MAX_UPLOAD_MB: "500"
-      APP_VERSION_CODE: "9"
-      APP_VERSION_NAME: "0.5.2"
+      APP_VERSION_CODE: "11"
+      APP_VERSION_NAME: "0.6.1"
       RELEASE_APK: "/app/releases/baroconvert.apk"
     ports:
       - "8787:8787"
