@@ -12,7 +12,9 @@ import java.io.DataOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.util.UUID
+import org.json.JSONObject
 
 private fun decodeBitmap(resolver: ContentResolver, source: Uri): Bitmap =
     resolver.openInputStream(source).use { input ->
@@ -80,13 +82,15 @@ object ServerConverter {
         targetFormat: String,
         baseUrl: String,
         apiToken: String,
+        method: String,
     ) {
         require(baseUrl.isNotBlank()) { "변환 서버 주소를 먼저 입력하세요." }
         val boundary = "BaroConvert-${UUID.randomUUID()}"
         val safeMimeType = sourceMimeType.takeIf {
             it.matches(Regex("[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+"))
         } ?: "application/octet-stream"
-        val connection = (URL(baseUrl.trimEnd('/') + "/convert/$targetFormat").openConnection() as HttpURLConnection).apply {
+        val methodQuery = URLEncoder.encode(method, Charsets.UTF_8.name())
+        val connection = (URL(baseUrl.trimEnd('/') + "/convert/$targetFormat?method=$methodQuery").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 30_000
             readTimeout = 180_000
@@ -109,7 +113,16 @@ object ServerConverter {
 
             if (connection.responseCode !in 200..299) {
                 val message = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                error("서버 변환 실패 (${connection.responseCode}): ${message.take(300)}")
+                val detail = runCatching { JSONObject(message).optString("detail") }
+                    .getOrNull()
+                    .orEmpty()
+                    .ifBlank { message.take(300) }
+                val friendly = when (connection.responseCode) {
+                    402 -> detail.ifBlank { "클라우드 무료 사용량을 모두 사용했습니다." }
+                    503 -> detail.ifBlank { "선택한 클라우드 변환 서비스가 아직 설정되지 않았습니다." }
+                    else -> "서버 변환 실패 (${connection.responseCode}): $detail"
+                }
+                error(friendly)
             }
             connection.inputStream.use { input -> target.outputStream().buffered().use(input::copyTo) }
         } finally {
