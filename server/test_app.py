@@ -5,7 +5,7 @@ import hashlib
 import tempfile
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -17,6 +17,9 @@ PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presen
 class ConvertApiTest(unittest.TestCase):
     def setUp(self) -> None:
         server.API_KEY = "test-secret"
+        server.CLOUDCONVERT_API_KEY = ""
+        server.PDF_SERVICES_CLIENT_ID = ""
+        server.PDF_SERVICES_CLIENT_SECRET = ""
         server.MAX_BYTES = 1024 * 1024
         self.release_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.release_dir.cleanup)
@@ -73,7 +76,125 @@ class ConvertApiTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"], "application/pdf")
+        self.assertEqual(response.headers["x-conversion-engine"], "libreoffice")
         self.assertEqual(response.content, b"%PDF-test")
+
+    @patch("app.cloudconvert_file")
+    def test_prefers_cloudconvert_for_powerpoint(self, cloud_mock) -> None:
+        server.CLOUDCONVERT_API_KEY = "cloud-secret"
+
+        def fake_cloud(_source, output, target_format):
+            self.assertEqual(target_format, "pdf")
+            output.write_bytes(b"%PDF-cloud")
+            return 8
+
+        cloud_mock.side_effect = fake_cloud
+        response = self.client.post(
+            "/convert/pdf?method=cloud",
+            headers={"X-API-Key": "test-secret"},
+            files={"file": ("slides.pptx", b"pptx", PPTX_MIME)},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["x-conversion-engine"], "cloudconvert")
+        self.assertEqual(response.headers["x-cloudconvert-credits-remaining"], "8")
+        self.assertEqual(response.content, b"%PDF-cloud")
+
+    @patch("app.httpx.Client")
+    def test_cloudconvert_job_upload_wait_download_and_delete(self, client_class) -> None:
+        server.CLOUDCONVERT_API_KEY = "cloud-secret"
+        session = client_class.return_value
+
+        created = MagicMock()
+        created.status_code = 201
+        created.is_error = False
+        created.json.return_value = {
+            "data": {
+                "id": "job-123",
+                "tasks": [{
+                    "name": "upload-file",
+                    "result": {
+                        "form": {
+                            "url": "https://upload.cloudconvert.com/job-123",
+                            "parameters": {"signature": "signed", "max_file_count": 1},
+                        }
+                    },
+                }],
+            }
+        }
+        uploaded = MagicMock()
+        uploaded.status_code = 200
+        uploaded.is_error = False
+        session.post.side_effect = [created, uploaded]
+
+        credits = MagicMock()
+        credits.status_code = 200
+        credits.is_error = False
+        credits.json.return_value = {"data": {"credits": 10}}
+        completed = MagicMock()
+        completed.status_code = 200
+        completed.is_error = False
+        completed.json.return_value = {
+            "data": {
+                "status": "finished",
+                "tasks": [{
+                    "name": "export-file",
+                    "status": "finished",
+                    "result": {
+                        "files": [{
+                            "url": "https://storage.cloudconvert.com/result.pdf",
+                        }]
+                    },
+                }],
+            }
+        }
+        session.get.side_effect = [credits, completed]
+
+        downloaded = MagicMock()
+        downloaded.status_code = 200
+        downloaded.is_error = False
+        downloaded.iter_bytes.return_value = [b"%PDF-cloud-http"]
+        stream_context = MagicMock()
+        stream_context.__enter__.return_value = downloaded
+        session.stream.return_value = stream_context
+
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "slides.pptx"
+            output = Path(directory) / "slides.pdf"
+            source.write_bytes(b"pptx")
+            remaining = server.cloudconvert_file(source, output, "pdf")
+            self.assertEqual(output.read_bytes(), b"%PDF-cloud-http")
+            self.assertEqual(remaining, 10)
+
+        session.delete.assert_called_once()
+        session.close.assert_called_once()
+
+    @patch("app.cloudconvert_file")
+    def test_cloud_quota_error_does_not_silently_fallback(self, cloud_mock) -> None:
+        server.CLOUDCONVERT_API_KEY = "cloud-secret"
+        cloud_mock.side_effect = server.CloudConvertCreditsExhausted("무료 크레딧을 모두 사용했습니다.")
+        response = self.client.post(
+            "/convert/pdf?method=cloud",
+            headers={"X-API-Key": "test-secret"},
+            files={"file": ("slides.pptx", b"pptx", PPTX_MIME)},
+        )
+        self.assertEqual(response.status_code, 402)
+        self.assertIn("크레딧", response.json()["detail"])
+
+    @patch("app.adobe_file")
+    def test_adobe_is_explicit_and_supported_for_powerpoint(self, adobe_mock) -> None:
+        def fake_adobe(_source, output, target_format):
+            self.assertEqual(target_format, "pdf")
+            output.write_bytes(b"%PDF-adobe")
+
+        adobe_mock.side_effect = fake_adobe
+        response = self.client.post(
+            "/convert/pdf?method=adobe",
+            headers={"X-API-Key": "test-secret"},
+            files={"file": ("slides.pptx", b"pptx", PPTX_MIME)},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["x-conversion-engine"], "adobe-pdf-services")
+        self.assertEqual(response.content, b"%PDF-adobe")
 
     def test_rejects_meaningless_office_to_audio(self) -> None:
         response = self.client.post(
