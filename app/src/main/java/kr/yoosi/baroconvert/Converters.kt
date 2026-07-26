@@ -15,6 +15,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.util.UUID
 import org.json.JSONObject
+import org.json.JSONArray
 
 private fun decodeBitmap(resolver: ContentResolver, source: Uri): Bitmap =
     resolver.openInputStream(source).use { input ->
@@ -73,6 +74,37 @@ object LocalCopyConverter {
 }
 
 object ServerConverter {
+    fun cloudFormats(baseUrl: String, apiToken: String, inputFormat: String): List<String> {
+        require(baseUrl.isNotBlank()) { "변환 서버 주소를 먼저 입력하세요." }
+        val safeInput = inputFormat.lowercase().takeIf { it.matches(Regex("[a-z0-9][a-z0-9._+-]{0,31}")) }
+            ?: return emptyList()
+        val connection = (URL(baseUrl.trimEnd('/') + "/cloud/formats/$safeInput").openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            if (apiToken.isNotBlank()) setRequestProperty("X-API-Key", apiToken)
+        }
+        try {
+            if (connection.responseCode !in 200..299) {
+                val body = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                val detail = runCatching { JSONObject(body).optString("detail") }.getOrNull().orEmpty()
+                error(detail.ifBlank { "CloudConvert 형식 목록 조회 실패 (${connection.responseCode})" })
+            }
+            val json = connection.inputStream.bufferedReader().use { JSONObject(it.readText()) }
+            val outputs: JSONArray = json.optJSONArray("outputs") ?: return emptyList()
+            return buildList {
+                for (index in 0 until outputs.length()) {
+                    outputs.optJSONObject(index)?.optString("format")
+                        ?.lowercase()
+                        ?.takeIf { it.matches(Regex("[a-z0-9][a-z0-9._+-]{0,31}")) }
+                        ?.let(::add)
+                }
+            }.distinct()
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     fun convert(
         resolver: ContentResolver,
         source: Uri,
