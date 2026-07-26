@@ -8,17 +8,21 @@
 - PPTX → PDF (개인 NAS의 LibreOffice 서버 사용)
 - JPG/PNG/WEBP 등 Android가 읽을 수 있는 이미지 → PDF/JPG/PNG/WEBP (기기 내부 처리)
 - 파일을 먼저 선택하면 해당 파일에서 가능한 출력 확장자만 표시
+- 출력 형식을 누르면 가능한 변환 방법과 `추천` 방법을 함께 표시
+- 휴대폰 자체 / NAS 무료 / Adobe 고품질 / CloudConvert 경로를 변환 전에 선택
 - JSON/XML/YAML/Markdown/LOG/INI/CONF → TXT (내용을 변경하지 않고 기기 내부에서 저장)
 - DOC/DOCX/ODT/RTF/TXT/HTML, PPT/PPTX/ODP, XLS/XLSX/ODS/CSV → PDF
 - MP3/M4A/AAC/WAV/FLAC/OGG/OPUS/WMA 음원 상호 변환
 - MP4/MOV/MKV/AVI/WEBM/M4V/3GP/WMV/FLV → MP4/MKV/WEBM 또는 음원 추출
 - PDF → 페이지별 JPG/PNG ZIP 묶음
+- PDF → DOCX/PPTX/XLSX (Adobe 또는 CloudConvert)
+- SVG/PSD/AI·전자책·압축 파일의 선택형 CloudConvert 변환
 - 내 파일/갤러리에서 공유 → 파일 확장자 변환
 - 시스템 파일 선택기와 저장 위치 선택기 사용 (전체 저장소 권한 없음)
 
 ## 왜 일부 변환은 서버를 쓰나요?
 
-Android에는 Office 문서 렌더러나 범용 영상·음원 변환기가 내장되어 있지 않습니다. LibreOffice와 FFmpeg 전체를 앱에 포함하면 용량, 라이선스, 기기 호환성 문제가 커집니다. 이미지는 기기 내부에서 처리하고 문서·PDF·영상·음원은 개인 NAS의 LibreOffice, Poppler, FFmpeg로 변환합니다.
+Android에는 Office 문서 렌더러나 범용 영상·음원 변환기가 내장되어 있지 않습니다. 이미지는 기기 내부에서 처리하고 영상·음원·PDF 이미지는 개인 NAS에서 처리합니다. Office→PDF는 무료 NAS 방식과 Adobe 고품질 방식을 선택할 수 있고, 특수 형식은 CloudConvert를 사용합니다. 앱은 추천 방법을 기본 선택하지만 실제 전송 전에 처리 위치를 표시합니다.
 
 ## NAS 서버 실행
 
@@ -29,7 +33,7 @@ cd server
 docker compose up -d --build
 ```
 
-실행 전에 `server/.env.example`을 `server/.env`로 복사하고 `API_KEY`를 길고 임의적인 값으로 반드시 변경하세요. 같은 값을 앱의 **API 키** 칸에 입력합니다. `.env`는 Git에 올리지 마세요.
+실행 전에 `server/.env.example`을 `server/.env`로 복사하고 `API_KEY`를 길고 임의적인 값으로 반드시 변경하세요. CloudConvert와 Adobe는 사용할 서비스의 키만 추가하면 됩니다. 같은 `API_KEY` 값을 앱의 **API 키** 칸에 입력합니다. `.env`는 Git에 올리지 마세요.
 
 서버 확인:
 
@@ -60,7 +64,8 @@ Gradle Wrapper가 포함되어 있으므로 Android Studio를 열지 않고도 J
 
 ## 개인정보와 한계
 
-- 문서·PDF·영상·음원은 지정한 서버로 업로드되며 변환 후 임시 폴더가 삭제됩니다.
+- NAS 방식은 지정한 서버로, Adobe/CloudConvert 방식은 NAS를 거쳐 선택한 외부 서비스로 업로드되며 변환 후 NAS 임시 폴더가 삭제됩니다.
+- 클라우드 사용량 소진 시 다른 방식으로 자동 전환하지 않으며 앱에 안내합니다.
 - 로컬 HTTP는 암호화되지 않습니다. 신뢰하는 집 내부망에서만 사용하세요.
 - LibreOffice와 Microsoft PowerPoint의 글꼴/도형 렌더링 차이로 일부 슬라이드 배치가 달라질 수 있습니다.
 - 원본 PPTX가 사용하는 글꼴을 NAS 컨테이너에도 설치해야 결과가 가장 비슷합니다.
