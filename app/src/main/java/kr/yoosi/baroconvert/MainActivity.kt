@@ -94,6 +94,25 @@ private enum class OutputFormat(
     MP4("MP4", "mp4", "video/mp4"),
     MKV("MKV", "mkv", "video/x-matroska"),
     WEBM("WEBM", "webm", "video/webm"),
+    DOCX("DOCX", "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    PPTX("PPTX", "pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    XLSX("XLSX", "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    SVG("SVG", "svg", "image/svg+xml"),
+    EPUB("EPUB", "epub", "application/epub+zip"),
+    MOBI("MOBI", "mobi", "application/x-mobipocket-ebook"),
+    AZW3("AZW3", "azw3", "application/vnd.amazon.ebook"),
+    ZIP("ZIP", "zip", "application/zip"),
+}
+
+private enum class ConversionMethod(
+    val label: String,
+    val apiValue: String?,
+    val description: String,
+) {
+    LOCAL("휴대폰 자체", null, "파일이 외부로 전송되지 않고 이 기기에서 바로 변환됩니다."),
+    NAS("NAS 무료", "nas", "내 NAS에서 무료로 변환합니다. Office 문서는 글꼴이나 배치가 달라질 수 있습니다."),
+    ADOBE("Adobe 고품질", "adobe", "Adobe PDF Services로 전송해 원본 배치와 글꼴을 더 잘 보존합니다."),
+    CLOUD("CloudConvert", "cloud", "CloudConvert로 전송해 NAS에서 지원하지 않는 형식을 변환합니다."),
 }
 
 private data class PreparedResult(
@@ -111,7 +130,9 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
         initialUris.map { fileInfo(context.contentResolver, it) }
     }
     var selectedFiles by remember { mutableStateOf(initialFiles) }
-    var selectedFormat by remember { mutableStateOf(commonAvailableFormats(initialFiles).firstOrNull()) }
+    val initialFormat = remember(initialFiles) { commonAvailableFormats(initialFiles).firstOrNull() }
+    var selectedFormat by remember { mutableStateOf(initialFormat) }
+    var selectedMethod by remember { mutableStateOf(recommendedMethod(initialFiles, initialFormat)) }
     var serverUrl by remember { mutableStateOf(prefs.getString("url", "http://192.168.0.10:8787").orEmpty()) }
     var apiToken by remember { mutableStateOf(prefs.getString("token", "").orEmpty()) }
     var status by remember { mutableStateOf("변환할 파일을 선택하세요.") }
@@ -148,6 +169,7 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
             val picked = uris.map { fileInfo(context.contentResolver, it) }
             selectedFiles = picked
             selectedFormat = commonAvailableFormats(picked).firstOrNull()
+            selectedMethod = recommendedMethod(picked, selectedFormat)
             if (picked.any { it.requiresServer() }) serverExpanded = true
             status = if (selectedFormat == null) {
                 "선택한 파일에 공통으로 지원되는 출력 형식이 없습니다."
@@ -298,12 +320,40 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                                     rowFormats.forEach { format ->
                                         FilterChip(
                                             selected = selectedFormat == format,
-                                            onClick = { selectedFormat = format },
+                                            onClick = {
+                                                selectedFormat = format
+                                                selectedMethod = recommendedMethod(selectedFiles, format)
+                                            },
                                             label = { Text(format.label) },
                                             shape = RoundedCornerShape(12.dp),
                                         )
                                     }
                                 }
+                            }
+                        }
+                        val methods = commonAvailableMethods(selectedFiles, selectedFormat)
+                        if (methods.isNotEmpty()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = "변환 방법",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = "원하는 방법을 고르세요. 추천 방법이 자동으로 선택됩니다.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            val recommended = recommendedMethod(selectedFiles, selectedFormat)
+                            methods.forEach { method ->
+                                FilterChip(
+                                    selected = selectedMethod == method,
+                                    onClick = { selectedMethod = method },
+                                    label = {
+                                        Text(if (method == recommended) "${method.label} · 추천" else method.label)
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                )
                             }
                         }
                     }
@@ -315,11 +365,35 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                     description = when {
                         selectedFiles.isEmpty() -> "파일을 선택하면 변환 버튼이 활성화됩니다."
                         selectedFormat == null -> "변환할 출력 형식을 선택하세요."
+                        selectedMethod == null -> "변환 방법을 선택하세요."
                         selectedFiles.size == 1 -> "${selectedFormat!!.label} 파일로 변환할 준비가 됐습니다."
                         else -> "${selectedFiles.size}개 파일을 ${selectedFormat!!.label} 형식으로 변환합니다."
                     },
-                    active = selectedFiles.isNotEmpty() && selectedFormat != null,
+                    active = selectedFiles.isNotEmpty() && selectedFormat != null && selectedMethod != null,
                 ) {
+                    selectedMethod?.let { method ->
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    text = "${method.label} 방식으로 변환 예정",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    text = method.description,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
                     if (converting) {
                         LinearProgressIndicator(
                             modifier = Modifier
@@ -328,7 +402,7 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                         )
                     }
                     Button(
-                        enabled = selectedFiles.isNotEmpty() && selectedFormat != null && !converting,
+                        enabled = selectedFiles.isNotEmpty() && selectedFormat != null && selectedMethod != null && !converting,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp),
@@ -337,6 +411,7 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                             val sources = selectedFiles
                             if (sources.isEmpty()) return@Button
                             val format = selectedFormat ?: return@Button
+                            val method = selectedMethod ?: return@Button
                             prefs.edit().putString("url", serverUrl).putString("token", apiToken).apply()
                             converting = true
                             status = "${sources.size}개 파일을 ${format.label}로 변환 중…"
@@ -359,6 +434,7 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                                                         output = output,
                                                         serverUrl = serverUrl,
                                                         apiToken = apiToken,
+                                                        method = method,
                                                     )
                                                 } catch (error: Throwable) {
                                                     output.delete()
@@ -652,6 +728,19 @@ private val audioFormats = listOf(
     OutputFormat.FLAC, OutputFormat.OGG, OutputFormat.OPUS,
 )
 private val videoFormats = listOf(OutputFormat.MP4, OutputFormat.MKV, OutputFormat.WEBM)
+private val officeCloudFormats = listOf(OutputFormat.DOCX, OutputFormat.PPTX, OutputFormat.XLSX)
+private val cloudOnlyFormats = mapOf(
+    "svg" to listOf(OutputFormat.PDF, OutputFormat.JPG, OutputFormat.PNG),
+    "psd" to listOf(OutputFormat.PDF, OutputFormat.JPG, OutputFormat.PNG),
+    "ai" to listOf(OutputFormat.PDF, OutputFormat.JPG, OutputFormat.PNG, OutputFormat.SVG),
+    "epub" to listOf(OutputFormat.PDF, OutputFormat.MOBI, OutputFormat.AZW3),
+    "mobi" to listOf(OutputFormat.PDF, OutputFormat.EPUB, OutputFormat.AZW3),
+    "azw3" to listOf(OutputFormat.PDF, OutputFormat.EPUB, OutputFormat.MOBI),
+    "rar" to listOf(OutputFormat.ZIP),
+    "7z" to listOf(OutputFormat.ZIP),
+    "tar" to listOf(OutputFormat.ZIP),
+    "gz" to listOf(OutputFormat.ZIP),
+)
 
 private fun commonAvailableFormats(files: List<SelectedFile>): List<OutputFormat> {
     if (files.isEmpty()) return emptyList()
@@ -665,16 +754,48 @@ private fun availableFormats(file: SelectedFile): List<OutputFormat> = when {
     file.isImage() -> listOf(OutputFormat.PDF, OutputFormat.JPG, OutputFormat.PNG, OutputFormat.WEBP_IMAGE)
     file.isTextLike() -> listOf(OutputFormat.TXT)
     file.extension() in officeExtensions -> listOf(OutputFormat.PDF)
-    file.extension() == "pdf" -> listOf(OutputFormat.JPG_ZIP, OutputFormat.PNG_ZIP)
+    file.extension() == "pdf" -> listOf(OutputFormat.JPG_ZIP, OutputFormat.PNG_ZIP) + officeCloudFormats
     file.extension() in audioExtensions -> audioFormats.filterNot { it.extension == file.extension() }
     file.extension() in videoExtensions ->
         (videoFormats.filterNot { it.extension == file.extension() } + audioFormats)
+    else -> cloudOnlyFormats[file.extension()].orEmpty()
+}
+
+private fun commonAvailableMethods(
+    files: List<SelectedFile>,
+    format: OutputFormat?,
+): List<ConversionMethod> {
+    if (files.isEmpty() || format == null) return emptyList()
+    return files.drop(1).fold(availableMethods(files.first(), format)) { common, file ->
+        val supported = availableMethods(file, format)
+        common.filter { it in supported }
+    }
+}
+
+private fun availableMethods(file: SelectedFile, format: OutputFormat): List<ConversionMethod> = when {
+    file.isImage() -> listOf(ConversionMethod.LOCAL)
+    file.isTextLike() && format == OutputFormat.TXT -> listOf(ConversionMethod.LOCAL)
+    file.extension() in setOf("doc", "docx", "ppt", "pptx", "xls", "xlsx") && format == OutputFormat.PDF ->
+        listOf(ConversionMethod.ADOBE, ConversionMethod.NAS, ConversionMethod.CLOUD)
+    file.extension() in officeExtensions && format == OutputFormat.PDF -> listOf(ConversionMethod.NAS)
+    file.extension() == "pdf" && format in officeCloudFormats ->
+        listOf(ConversionMethod.ADOBE, ConversionMethod.CLOUD)
+    file.extension() == "pdf" -> listOf(ConversionMethod.NAS)
+    file.extension() in audioExtensions || file.extension() in videoExtensions -> listOf(ConversionMethod.NAS)
+    format in cloudOnlyFormats[file.extension()].orEmpty() -> listOf(ConversionMethod.CLOUD)
     else -> emptyList()
 }
 
+private fun recommendedMethod(
+    files: List<SelectedFile>,
+    format: OutputFormat?,
+): ConversionMethod? = commonAvailableMethods(files, format).firstOrNull()
+
 private fun SelectedFile.isImage(): Boolean =
-    mimeType.startsWith("image/") || name.substringAfterLast('.', "").lowercase() in
-        setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "bmp", "gif")
+    extension() !in setOf("svg", "psd", "ai") && (
+        mimeType.startsWith("image/") || extension() in
+            setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "bmp", "gif")
+        )
 
 private fun SelectedFile.extension(): String = name.substringAfterLast('.', "").lowercase()
 
@@ -690,15 +811,16 @@ private fun convertFile(
     output: File,
     serverUrl: String,
     apiToken: String,
+    method: ConversionMethod,
 ) {
     when {
-        source.isImage() && format == OutputFormat.PDF ->
+        method == ConversionMethod.LOCAL && source.isImage() && format == OutputFormat.PDF ->
             LocalImageToPdfConverter.convert(context.contentResolver, source.uri, output)
-        source.isImage() ->
+        method == ConversionMethod.LOCAL && source.isImage() ->
             LocalImageConverter.convert(context.contentResolver, source.uri, output, format.extension)
-        source.isTextLike() && format == OutputFormat.TXT ->
+        method == ConversionMethod.LOCAL && source.isTextLike() && format == OutputFormat.TXT ->
             LocalCopyConverter.convert(context.contentResolver, source.uri, output)
-        source.requiresServer() ->
+        method != ConversionMethod.LOCAL ->
             ServerConverter.convert(
                 context.contentResolver,
                 source.uri,
@@ -708,6 +830,7 @@ private fun convertFile(
                 format.serverTarget,
                 serverUrl,
                 apiToken,
+                requireNotNull(method.apiValue),
             )
         else -> error("선택한 변환 조합은 아직 지원하지 않습니다.")
     }
