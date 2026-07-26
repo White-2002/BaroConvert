@@ -6,6 +6,7 @@ import tempfile
 import time
 import zipfile
 import hashlib
+import threading
 from pathlib import Path
 
 import httpx
@@ -21,6 +22,7 @@ APP_VERSION_NAME = os.environ.get("APP_VERSION_NAME", "unconfigured")
 RELEASE_APK = Path(os.environ.get("RELEASE_APK", "/app/releases/baroconvert.apk"))
 CLOUDCONVERT_API_KEY = os.environ.get("CLOUDCONVERT_API_KEY", "").strip()
 CLOUDCONVERT_TIMEOUT = int(os.environ.get("CLOUDCONVERT_TIMEOUT_SECONDS", "240"))
+CLOUDCONVERT_FORMAT_CACHE_SECONDS = int(os.environ.get("CLOUDCONVERT_FORMAT_CACHE_SECONDS", "21600"))
 PDF_SERVICES_CLIENT_ID = os.environ.get("PDF_SERVICES_CLIENT_ID", "").strip()
 PDF_SERVICES_CLIENT_SECRET = os.environ.get("PDF_SERVICES_CLIENT_SECRET", "").strip()
 ADOBE_TIMEOUT = int(os.environ.get("ADOBE_TIMEOUT_SECONDS", "240"))
@@ -49,6 +51,9 @@ VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".3gp", ".wmv", "
 AUDIO_TARGETS = {"mp3", "m4a", "wav", "flac", "ogg", "opus"}
 VIDEO_TARGETS = {"mp4", "mkv", "webm"}
 PDF_TARGETS = {"jpg-zip", "png-zip"}
+FORMAT_PATTERN = __import__("re").compile(r"^[a-z0-9][a-z0-9._+-]{0,31}$")
+_cloud_format_cache: dict[str, tuple[float, list[dict[str, object]]]] = {}
+_cloud_format_cache_lock = threading.Lock()
 
 
 def authorize(value: str | None) -> None:
@@ -58,17 +63,63 @@ def authorize(value: str | None) -> None:
         raise HTTPException(401, "API 키가 올바르지 않습니다.")
 
 
+def cloudconvert_formats(input_format: str) -> list[dict[str, object]]:
+    input_format = input_format.lower().lstrip(".")
+    if not FORMAT_PATTERN.fullmatch(input_format):
+        raise HTTPException(400, "올바르지 않은 입력 형식입니다.")
+    if not CLOUDCONVERT_API_KEY:
+        raise CloudConvertConfigurationError("CloudConvert API 키가 NAS에 설정되지 않았습니다.")
+
+    now = time.monotonic()
+    with _cloud_format_cache_lock:
+        cached = _cloud_format_cache.get(input_format)
+        if cached and now - cached[0] < CLOUDCONVERT_FORMAT_CACHE_SECONDS:
+            return cached[1]
+
+    try:
+        response = httpx.get(
+            "https://api.cloudconvert.com/v2/operations",
+            params={"filter[operation]": "convert", "filter[input_format]": input_format},
+            headers={"Authorization": f"Bearer {CLOUDCONVERT_API_KEY}"},
+            timeout=30,
+        )
+    except httpx.HTTPError as exc:
+        raise CloudConvertError(f"CloudConvert 형식 목록 연결 오류: {type(exc).__name__}") from exc
+    if response.status_code in {401, 403}:
+        raise CloudConvertConfigurationError("CloudConvert API 키 또는 권한을 확인해주세요.")
+    if response.is_error:
+        raise CloudConvertError(f"CloudConvert 형식 목록 조회 실패: {cloud_error_text(response)[:300]}")
+
+    operations = response.json().get("data", [])
+    best: dict[str, dict[str, object]] = {}
+    for operation in operations:
+        output = str(operation.get("output_format", "")).lower()
+        if not FORMAT_PATTERN.fullmatch(output) or output == input_format:
+            continue
+        credits = max(1, int(operation.get("credits") or 1))
+        current = best.get(output)
+        if current is None or credits < int(current["credits"]):
+            best[output] = {"format": output, "credits": credits}
+    result = sorted(best.values(), key=lambda item: str(item["format"]))
+    with _cloud_format_cache_lock:
+        _cloud_format_cache[input_format] = (now, result)
+    return result
+
+
+def cloudconvert_supports(source_ext: str, target: str) -> bool:
+    return any(item["format"] == target for item in cloudconvert_formats(source_ext))
+
+
 def validate_conversion(source_ext: str, target: str, method: str = "nas") -> None:
+    if not FORMAT_PATTERN.fullmatch(target):
+        raise HTTPException(400, "올바르지 않은 출력 형식입니다.")
     nas_allowed = (
         (source_ext in OFFICE_EXTS and target == "pdf")
         or (source_ext == ".pdf" and target in PDF_TARGETS)
         or (source_ext in AUDIO_EXTS and target in AUDIO_TARGETS)
         or (source_ext in VIDEO_EXTS and target in AUDIO_TARGETS | VIDEO_TARGETS)
     )
-    cloud_allowed = (
-        (source_ext in CLOUDCONVERT_OFFICE_EXTS and target == "pdf")
-        or target in CLOUD_ONLY_TARGETS.get(source_ext, set())
-    )
+    cloud_allowed = cloudconvert_supports(source_ext, target) if method == "cloud" else False
     adobe_allowed = (
         (source_ext in CLOUDCONVERT_OFFICE_EXTS and target == "pdf")
         or (source_ext == ".pdf" and target in {"docx", "pptx", "xlsx"})
@@ -497,6 +548,20 @@ def app_version(x_api_key: str | None = Header(default=None)) -> dict[str, objec
         "sha256": digest,
         "downloadPath": "/app/download",
     }
+
+
+@app.get("/cloud/formats/{input_format}")
+def cloud_formats(
+    input_format: str,
+    x_api_key: str | None = Header(default=None),
+) -> dict[str, object]:
+    authorize(x_api_key)
+    try:
+        return {"inputFormat": input_format.lower().lstrip("."), "outputs": cloudconvert_formats(input_format)}
+    except CloudConvertConfigurationError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except CloudConvertError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @app.get("/app/download")
