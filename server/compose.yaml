@@ -13,8 +13,8 @@ services:
       PDF_SERVICES_CLIENT_SECRET: "${PDF_SERVICES_CLIENT_SECRET:-}"
       ADOBE_TIMEOUT_SECONDS: "240"
       MAX_UPLOAD_MB: "500"
-      APP_VERSION_CODE: "12"
-      APP_VERSION_NAME: "0.7.0"
+      APP_VERSION_CODE: "13"
+      APP_VERSION_NAME: "0.7.1"
       RELEASE_APK: "/app/releases/baroconvert.apk"
     ports:
       - "8787:8787"
