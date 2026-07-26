@@ -455,22 +455,44 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                                 }.onSuccess { results ->
                                     preparedResults.forEach { it.file.delete() }
                                     preparedResults = results
-                                    status = "변환 완료 — 저장 위치를 선택하세요."
-                                    if (results.size == 1) {
-                                        saveFile.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-                                            addCategory(Intent.CATEGORY_OPENABLE)
-                                            type = format.mimeType
-                                            putExtra(Intent.EXTRA_TITLE, results.single().outputName)
-                                        })
-                                    } else {
-                                        saveFolder.launch(null)
-                                    }
+                                    status = "변환 완료 — 아래 저장 버튼을 눌러주세요."
                                 }.onFailure { status = it.message ?: "변환 실패" }
                                 converting = false
                             }
                         }
                     ) {
                         Text(if (converting) "변환 중…" else "변환 시작")
+                    }
+                    if (preparedResults.isNotEmpty()) {
+                        OutlinedButton(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(54.dp),
+                            shape = RoundedCornerShape(18.dp),
+                            onClick = {
+                                val results = preparedResults
+                                if (results.size == 1) {
+                                    val prepared = results.single()
+                                    saveFile.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                        addCategory(Intent.CATEGORY_OPENABLE)
+                                        type = prepared.format.mimeType
+                                        putExtra(Intent.EXTRA_TITLE, prepared.outputName)
+                                    })
+                                } else {
+                                    saveFolder.launch(null)
+                                }
+                            },
+                        ) {
+                            Text(
+                                if (preparedResults.size == 1) "변환된 파일 저장"
+                                else "변환된 ${preparedResults.size}개 파일 저장",
+                            )
+                        }
+                        Text(
+                            text = "저장 화면을 닫아도 결과가 유지되어 다시 저장할 수 있습니다.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
