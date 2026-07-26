@@ -133,7 +133,24 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
     val initialFormat = remember(initialFiles) { commonAvailableFormats(initialFiles).firstOrNull() }
     var selectedFormat by remember { mutableStateOf(initialFormat) }
     var selectedMethod by remember { mutableStateOf(recommendedMethod(initialFiles, initialFormat)) }
-    var serverUrl by remember { mutableStateOf(prefs.getString("url", "http://192.168.0.10:8787").orEmpty()) }
+    var localServerUrl by remember {
+        mutableStateOf(prefs.getString("local_url", "http://192.168.0.60:8787").orEmpty())
+    }
+    var tailscaleServerUrl by remember {
+        mutableStateOf(prefs.getString("tailscale_url", "http://100.118.136.20:8787").orEmpty())
+    }
+    var selectedServerProfile by remember {
+        mutableStateOf(prefs.getString("server_profile", "local").orEmpty())
+    }
+    var serverUrl by remember {
+        mutableStateOf(
+            if (prefs.getString("server_profile", "local") == "tailscale") {
+                prefs.getString("tailscale_url", "http://100.118.136.20:8787").orEmpty()
+            } else {
+                prefs.getString("local_url", "http://192.168.0.60:8787").orEmpty()
+            },
+        )
+    }
     var apiToken by remember { mutableStateOf(prefs.getString("token", "").orEmpty()) }
     var status by remember { mutableStateOf("변환할 파일을 선택하세요.") }
     var converting by remember { mutableStateOf(false) }
@@ -557,15 +574,72 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.bodySmall,
                             )
+                            Text(
+                                text = "접속 방법",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FilterChip(
+                                    selected = selectedServerProfile == "local",
+                                    onClick = {
+                                        selectedServerProfile = "local"
+                                        serverUrl = localServerUrl
+                                        prefs.edit()
+                                            .putString("server_profile", "local")
+                                            .putString("url", localServerUrl)
+                                            .apply()
+                                    },
+                                    label = { Text("집 Wi-Fi") },
+                                    shape = RoundedCornerShape(12.dp),
+                                )
+                                FilterChip(
+                                    selected = selectedServerProfile == "tailscale",
+                                    onClick = {
+                                        selectedServerProfile = "tailscale"
+                                        serverUrl = tailscaleServerUrl
+                                        prefs.edit()
+                                            .putString("server_profile", "tailscale")
+                                            .putString("url", tailscaleServerUrl)
+                                            .apply()
+                                    },
+                                    label = { Text("Tailscale") },
+                                    shape = RoundedCornerShape(12.dp),
+                                )
+                            }
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(14.dp),
+                            ) {
+                                Text(
+                                    text = "현재 사용: $serverUrl",
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            }
                             OutlinedTextField(
-                                value = serverUrl,
+                                value = localServerUrl,
                                 onValueChange = {
-                                    serverUrl = it
-                                    prefs.edit().putString("url", it).apply()
+                                    localServerUrl = it
+                                    if (selectedServerProfile == "local") serverUrl = it
+                                    prefs.edit().putString("local_url", it).apply()
                                 },
                                 modifier = Modifier.fillMaxWidth(),
-                                label = { Text("서버 주소") },
-                                supportingText = { Text("예: http://192.168.0.10:8787") },
+                                label = { Text("집 Wi-Fi 주소") },
+                                shape = RoundedCornerShape(16.dp),
+                                singleLine = true,
+                            )
+                            OutlinedTextField(
+                                value = tailscaleServerUrl,
+                                onValueChange = {
+                                    tailscaleServerUrl = it
+                                    if (selectedServerProfile == "tailscale") serverUrl = it
+                                    prefs.edit().putString("tailscale_url", it).apply()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("Tailscale 주소") },
                                 shape = RoundedCornerShape(16.dp),
                                 singleLine = true,
                             )
@@ -581,7 +655,7 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                                 singleLine = true,
                             )
                             Text(
-                                text = "외부 네트워크에서는 HTTPS 주소를 사용하세요.",
+                                text = "집에서는 집 Wi-Fi, 외부에서는 Tailscale을 선택하세요.",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.labelSmall,
                             )
