@@ -72,36 +72,46 @@ class MainActivity : ComponentActivity() {
 
 private data class SelectedFile(val uri: Uri, val name: String, val mimeType: String)
 
-private enum class OutputFormat(
+private data class OutputFormat(
     val label: String,
     val extension: String,
     val mimeType: String,
     val serverTarget: String = extension,
 ) {
-    PDF("PDF", "pdf", "application/pdf"),
-    TXT("TXT", "txt", "text/plain"),
-    JPG("JPG", "jpg", "image/jpeg"),
-    PNG("PNG", "png", "image/png"),
-    WEBP_IMAGE("WEBP", "webp", "image/webp"),
-    JPG_ZIP("JPG 묶음", "zip", "application/zip", "jpg-zip"),
-    PNG_ZIP("PNG 묶음", "zip", "application/zip", "png-zip"),
-    MP3("MP3", "mp3", "audio/mpeg"),
-    M4A("M4A", "m4a", "audio/mp4"),
-    WAV("WAV", "wav", "audio/wav"),
-    FLAC("FLAC", "flac", "audio/flac"),
-    OGG("OGG", "ogg", "audio/ogg"),
-    OPUS("OPUS", "opus", "audio/ogg"),
-    MP4("MP4", "mp4", "video/mp4"),
-    MKV("MKV", "mkv", "video/x-matroska"),
-    WEBM("WEBM", "webm", "video/webm"),
-    DOCX("DOCX", "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-    PPTX("PPTX", "pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
-    XLSX("XLSX", "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-    SVG("SVG", "svg", "image/svg+xml"),
-    EPUB("EPUB", "epub", "application/epub+zip"),
-    MOBI("MOBI", "mobi", "application/x-mobipocket-ebook"),
-    AZW3("AZW3", "azw3", "application/vnd.amazon.ebook"),
-    ZIP("ZIP", "zip", "application/zip"),
+    companion object {
+        val PDF = known("pdf", "application/pdf")
+        val TXT = known("txt", "text/plain")
+        val JPG = known("jpg", "image/jpeg")
+        val PNG = known("png", "image/png")
+        val WEBP_IMAGE = known("webp", "image/webp")
+        val JPG_ZIP = OutputFormat("JPG 묶음", "zip", "application/zip", "jpg-zip")
+        val PNG_ZIP = OutputFormat("PNG 묶음", "zip", "application/zip", "png-zip")
+        val MP3 = known("mp3", "audio/mpeg")
+        val M4A = known("m4a", "audio/mp4")
+        val WAV = known("wav", "audio/wav")
+        val FLAC = known("flac", "audio/flac")
+        val OGG = known("ogg", "audio/ogg")
+        val OPUS = known("opus", "audio/ogg")
+        val MP4 = known("mp4", "video/mp4")
+        val MKV = known("mkv", "video/x-matroska")
+        val WEBM = known("webm", "video/webm")
+        val DOCX = known("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        val PPTX = known("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        val XLSX = known("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        val SVG = known("svg", "image/svg+xml")
+        val EPUB = known("epub", "application/epub+zip")
+        val MOBI = known("mobi", "application/x-mobipocket-ebook")
+        val AZW3 = known("azw3", "application/vnd.amazon.ebook")
+        val ZIP = known("zip", "application/zip")
+
+        fun cloud(extension: String): OutputFormat = known(
+            extension,
+            java.net.URLConnection.guessContentTypeFromName("file.$extension") ?: "application/octet-stream",
+        )
+
+        private fun known(extension: String, mimeType: String) =
+            OutputFormat(extension.uppercase(), extension, mimeType)
+    }
 }
 
 private enum class ConversionMethod(
@@ -152,6 +162,9 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
         )
     }
     var apiToken by remember { mutableStateOf(prefs.getString("token", "").orEmpty()) }
+    var cloudFormatsByInput by remember { mutableStateOf(emptyMap<String, Set<String>>()) }
+    var loadingCloudFormats by remember { mutableStateOf(false) }
+    var cloudFormatsMessage by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("변환할 파일을 선택하세요.") }
     var converting by remember { mutableStateOf(false) }
     var preparedResults by remember { mutableStateOf(emptyList<PreparedResult>()) }
@@ -177,6 +190,35 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
 
     LaunchedEffect(Unit) {
         requestUpdateCheck()
+    }
+
+    LaunchedEffect(selectedFiles, serverUrl, apiToken) {
+        val inputs = selectedFiles.map { it.extension() }.filter { it.isNotBlank() }.distinct()
+        if (inputs.isEmpty() || serverUrl.isBlank() || apiToken.isBlank()) {
+            cloudFormatsByInput = emptyMap()
+            loadingCloudFormats = false
+            return@LaunchedEffect
+        }
+        loadingCloudFormats = true
+        cloudFormatsMessage = ""
+        runCatching {
+            withContext(Dispatchers.IO) {
+                inputs.associateWith { input ->
+                    ServerConverter.cloudFormats(serverUrl, apiToken, input).toSet()
+                }
+            }
+        }.onSuccess { formats ->
+            cloudFormatsByInput = formats
+            val available = commonAvailableFormats(selectedFiles, formats)
+            if (selectedFormat !in available) {
+                selectedFormat = available.firstOrNull()
+                selectedMethod = recommendedMethod(selectedFiles, selectedFormat, formats)
+            }
+        }.onFailure {
+            cloudFormatsByInput = emptyMap()
+            cloudFormatsMessage = it.message ?: "CloudConvert 형식 목록을 불러오지 못했습니다."
+        }
+        loadingCloudFormats = false
     }
 
     val openFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -318,12 +360,13 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                     }
                 }
 
-                val formats = commonAvailableFormats(selectedFiles)
+                val formats = commonAvailableFormats(selectedFiles, cloudFormatsByInput)
                 StepCard(
                     number = "2",
                     title = "출력 형식",
                     description = when {
                         selectedFiles.isEmpty() -> "1단계에서 파일을 선택하면 가능한 형식이 나타납니다."
+                        loadingCloudFormats -> "CloudConvert 지원 형식을 확인하고 있습니다."
                         formats.isEmpty() -> "선택한 모든 파일에 공통으로 가능한 형식이 없습니다."
                         selectedFiles.size == 1 -> "원하는 확장자 하나를 선택하세요."
                         else -> "${selectedFiles.size}개 파일의 공통 출력 형식만 표시됩니다."
@@ -339,16 +382,22 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                                             selected = selectedFormat == format,
                                             onClick = {
                                                 selectedFormat = format
-                                                selectedMethod = recommendedMethod(selectedFiles, format)
+                                                selectedMethod = recommendedMethod(selectedFiles, format, cloudFormatsByInput)
                                             },
-                                            label = { Text(format.label) },
+                                            label = {
+                                                val cloudOnly = selectedFiles.all {
+                                                    format.extension in cloudFormatsByInput[it.extension()].orEmpty() &&
+                                                        availableMethods(it, format).isEmpty()
+                                                }
+                                                Text(if (cloudOnly) "${format.label} · Cloud" else format.label)
+                                            },
                                             shape = RoundedCornerShape(12.dp),
                                         )
                                     }
                                 }
                             }
                         }
-                        val methods = commonAvailableMethods(selectedFiles, selectedFormat)
+                        val methods = commonAvailableMethods(selectedFiles, selectedFormat, cloudFormatsByInput)
                         if (methods.isNotEmpty()) {
                             Spacer(Modifier.height(6.dp))
                             Text(
@@ -361,7 +410,7 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.bodySmall,
                             )
-                            val recommended = recommendedMethod(selectedFiles, selectedFormat)
+                            val recommended = recommendedMethod(selectedFiles, selectedFormat, cloudFormatsByInput)
                             methods.forEach { method ->
                                 FilterChip(
                                     selected = selectedMethod == method,
@@ -373,6 +422,15 @@ private fun BaroConvertApp(initialUris: List<Uri>) {
                                 )
                             }
                         }
+                    }
+                    if (loadingCloudFormats) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    } else if (cloudFormatsMessage.isNotBlank()) {
+                        Text(
+                            text = cloudFormatsMessage,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                 }
 
@@ -838,10 +896,19 @@ private val cloudOnlyFormats = mapOf(
     "gz" to listOf(OutputFormat.ZIP),
 )
 
-private fun commonAvailableFormats(files: List<SelectedFile>): List<OutputFormat> {
+private fun commonAvailableFormats(
+    files: List<SelectedFile>,
+    cloudFormatsByInput: Map<String, Set<String>> = emptyMap(),
+): List<OutputFormat> {
     if (files.isEmpty()) return emptyList()
-    return files.drop(1).fold(availableFormats(files.first())) { common, file ->
-        val supported = availableFormats(file)
+    fun formats(file: SelectedFile): List<OutputFormat> {
+        val builtIn = availableFormats(file)
+        val cloud = cloudFormatsByInput[file.extension()].orEmpty()
+            .map(OutputFormat::cloud)
+        return (builtIn + cloud).distinctBy { it.serverTarget }
+    }
+    return files.drop(1).fold(formats(files.first())) { common, file ->
+        val supported = formats(file)
         common.filter { it in supported }
     }
 }
@@ -860,10 +927,20 @@ private fun availableFormats(file: SelectedFile): List<OutputFormat> = when {
 private fun commonAvailableMethods(
     files: List<SelectedFile>,
     format: OutputFormat?,
+    cloudFormatsByInput: Map<String, Set<String>> = emptyMap(),
 ): List<ConversionMethod> {
     if (files.isEmpty() || format == null) return emptyList()
-    return files.drop(1).fold(availableMethods(files.first(), format)) { common, file ->
-        val supported = availableMethods(file, format)
+    fun methods(file: SelectedFile): List<ConversionMethod> {
+        val builtIn = availableMethods(file, format)
+        val cloud = if (format.serverTarget in cloudFormatsByInput[file.extension()].orEmpty()) {
+            listOf(ConversionMethod.CLOUD)
+        } else {
+            emptyList()
+        }
+        return (builtIn + cloud).distinct()
+    }
+    return files.drop(1).fold(methods(files.first())) { common, file ->
+        val supported = methods(file)
         common.filter { it in supported }
     }
 }
@@ -885,7 +962,8 @@ private fun availableMethods(file: SelectedFile, format: OutputFormat): List<Con
 private fun recommendedMethod(
     files: List<SelectedFile>,
     format: OutputFormat?,
-): ConversionMethod? = commonAvailableMethods(files, format).firstOrNull()
+    cloudFormatsByInput: Map<String, Set<String>> = emptyMap(),
+): ConversionMethod? = commonAvailableMethods(files, format, cloudFormatsByInput).firstOrNull()
 
 private fun SelectedFile.isImage(): Boolean =
     extension() !in setOf("svg", "psd", "ai") && (
