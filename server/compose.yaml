@@ -7,9 +7,14 @@ services:
     restart: unless-stopped
     environment:
       API_KEY: "${API_KEY:?Set API_KEY in server/.env}"
+      CLOUDCONVERT_API_KEY: "${CLOUDCONVERT_API_KEY:-}"
+      CLOUDCONVERT_TIMEOUT_SECONDS: "240"
+      PDF_SERVICES_CLIENT_ID: "${PDF_SERVICES_CLIENT_ID:-}"
+      PDF_SERVICES_CLIENT_SECRET: "${PDF_SERVICES_CLIENT_SECRET:-}"
+      ADOBE_TIMEOUT_SECONDS: "240"
       MAX_UPLOAD_MB: "500"
-      APP_VERSION_CODE: "11"
-      APP_VERSION_NAME: "0.6.1"
+      APP_VERSION_CODE: "12"
+      APP_VERSION_NAME: "0.7.0"
       RELEASE_APK: "/app/releases/baroconvert.apk"
     ports:
       - "8787:8787"
